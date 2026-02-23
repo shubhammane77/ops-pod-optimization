@@ -23,6 +23,12 @@ export interface MetricPoint {
   values: number[];
 }
 
+export interface PodMetricPoint {
+  namespace: string;
+  pod: string;
+  values: number[];
+}
+
 export class DynatraceClient {
   private readonly endpoint: string;
   private readonly token: string;
@@ -287,5 +293,82 @@ export class DynatraceClient {
     const output = [...namespaces].sort();
     debug('discoverNamespaces end', { namespaces: output.length });
     return output;
+  }
+
+  private parsePodSeries(payload: MetricsResponse, namespace: string): PodMetricPoint[] {
+    debug('parsePodSeries start', { resultCount: payload.result?.length ?? 0, namespace });
+    const out: PodMetricPoint[] = [];
+
+    for (const metric of payload.result ?? []) {
+      for (const series of metric.data ?? []) {
+        const values = (series.values ?? []).filter((v): v is number => typeof v === 'number');
+        if (values.length === 0) continue;
+
+        const map = series.dimensionMap ?? {};
+        const ns =
+          map['k8s.namespace.name'] ??
+          this.findDimensionByNeedle(map, 'namespace') ??
+          series.dimensions.find((v) => v?.includes(namespace)) ??
+          namespace;
+        if (ns !== namespace) continue;
+
+        const pod =
+          map['k8s.pod.name'] ??
+          this.findDimensionByNeedle(map, 'pod') ??
+          series.dimensions.find((v) => v && v !== ns) ??
+          'unknown-pod';
+
+        out.push({ namespace: ns, pod, values });
+      }
+    }
+
+    debug('parsePodSeries end', { rows: out.length, namespace });
+    return out;
+  }
+
+  async queryPodMetric(
+    metricType: 'cpuUsage' | 'memoryUsage' | 'cpuLimit' | 'memoryLimit',
+    fromWindow: string,
+    namespace: string,
+  ): Promise<PodMetricPoint[]> {
+    const selectorByType: Record<typeof metricType, string> = {
+      cpuUsage: 'builtin:containers.cpu.usageMilliCores:splitBy("k8s.namespace.name","k8s.pod.name"):avg',
+      memoryUsage: 'builtin:containers.memory.residentSetBytes:splitBy("k8s.namespace.name","k8s.pod.name"):avg',
+      cpuLimit: 'builtin:containers.cpu.limit:splitBy("k8s.namespace.name","k8s.pod.name"):max',
+      memoryLimit: 'builtin:containers.memory.limitBytes:splitBy("k8s.namespace.name","k8s.pod.name"):max',
+    };
+
+    const selector = this.buildNamespaceScopedSelector(selectorByType[metricType], namespace);
+    debug('queryPodMetric start', { metricType, selector, namespace, fromWindow });
+
+    const rows: PodMetricPoint[] = [];
+    let nextPageKey: string | undefined;
+    let page = 0;
+
+    do {
+      page += 1;
+      const params = new URLSearchParams();
+      if (nextPageKey) {
+        params.set('nextPageKey', nextPageKey);
+      } else {
+        params.set('metricSelector', selector);
+        params.set('from', `now-${fromWindow}`);
+        params.set('resolution', '1h');
+      }
+
+      const payload = await this.requestMetrics(params);
+      rows.push(...this.parsePodSeries(payload, namespace));
+      nextPageKey = payload.nextPageKey;
+      debug('queryPodMetric page', { metricType, namespace, page, nextPageKey: nextPageKey ?? null, rows: rows.length });
+    } while (nextPageKey);
+
+    if (rows.length === 0) {
+      throw new Error(
+        `No pod metric data for ${metricType} in namespace ${namespace}. Selector: ${selectorByType[metricType]}`,
+      );
+    }
+
+    debug('queryPodMetric end', { metricType, namespace, rows: rows.length });
+    return rows;
   }
 }

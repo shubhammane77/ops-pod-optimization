@@ -316,6 +316,58 @@ var DynatraceClient = class {
     debug("discoverNamespaces end", { namespaces: output.length });
     return output;
   }
+  parsePodSeries(payload, namespace) {
+    debug("parsePodSeries start", { resultCount: payload.result?.length ?? 0, namespace });
+    const out = [];
+    for (const metric of payload.result ?? []) {
+      for (const series of metric.data ?? []) {
+        const values = (series.values ?? []).filter((v) => typeof v === "number");
+        if (values.length === 0) continue;
+        const map = series.dimensionMap ?? {};
+        const ns = map["k8s.namespace.name"] ?? this.findDimensionByNeedle(map, "namespace") ?? series.dimensions.find((v) => v?.includes(namespace)) ?? namespace;
+        if (ns !== namespace) continue;
+        const pod = map["k8s.pod.name"] ?? this.findDimensionByNeedle(map, "pod") ?? series.dimensions.find((v) => v && v !== ns) ?? "unknown-pod";
+        out.push({ namespace: ns, pod, values });
+      }
+    }
+    debug("parsePodSeries end", { rows: out.length, namespace });
+    return out;
+  }
+  async queryPodMetric(metricType, fromWindow, namespace) {
+    const selectorByType = {
+      cpuUsage: 'builtin:containers.cpu.usageMilliCores:splitBy("k8s.namespace.name","k8s.pod.name"):avg',
+      memoryUsage: 'builtin:containers.memory.residentSetBytes:splitBy("k8s.namespace.name","k8s.pod.name"):avg',
+      cpuLimit: 'builtin:containers.cpu.limit:splitBy("k8s.namespace.name","k8s.pod.name"):max',
+      memoryLimit: 'builtin:containers.memory.limitBytes:splitBy("k8s.namespace.name","k8s.pod.name"):max'
+    };
+    const selector = this.buildNamespaceScopedSelector(selectorByType[metricType], namespace);
+    debug("queryPodMetric start", { metricType, selector, namespace, fromWindow });
+    const rows = [];
+    let nextPageKey;
+    let page = 0;
+    do {
+      page += 1;
+      const params = new URLSearchParams();
+      if (nextPageKey) {
+        params.set("nextPageKey", nextPageKey);
+      } else {
+        params.set("metricSelector", selector);
+        params.set("from", `now-${fromWindow}`);
+        params.set("resolution", "1h");
+      }
+      const payload = await this.requestMetrics(params);
+      rows.push(...this.parsePodSeries(payload, namespace));
+      nextPageKey = payload.nextPageKey;
+      debug("queryPodMetric page", { metricType, namespace, page, nextPageKey: nextPageKey ?? null, rows: rows.length });
+    } while (nextPageKey);
+    if (rows.length === 0) {
+      throw new Error(
+        `No pod metric data for ${metricType} in namespace ${namespace}. Selector: ${selectorByType[metricType]}`
+      );
+    }
+    debug("queryPodMetric end", { metricType, namespace, rows: rows.length });
+    return rows;
+  }
 };
 
 // src/domain/recommendations.ts
@@ -477,6 +529,84 @@ var summarizeByNamespace = (rows) => {
   return out;
 };
 
+// src/domain/podInventory.ts
+var keyFor = (namespace, pod) => `${namespace}::${pod}`;
+var mean2 = (values) => {
+  if (values.length === 0) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+};
+var percentile2 = (values, p) => {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const rank = p / 100 * (sorted.length - 1);
+  const low = Math.floor(rank);
+  const high = Math.ceil(rank);
+  if (low === high) return sorted[low];
+  const weight = rank - low;
+  return sorted[low] * (1 - weight) + sorted[high] * weight;
+};
+var mergeByPod = (rows) => {
+  const map = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    const key = keyFor(row.namespace, row.pod);
+    const existing = map.get(key) ?? [];
+    existing.push(...row.values);
+    map.set(key, existing);
+  }
+  return map;
+};
+var buildPodInventory = (args) => {
+  debug("buildPodInventory start", {
+    namespace: args.namespace,
+    cpuUsage: args.cpuUsage.length,
+    memoryUsage: args.memoryUsage.length,
+    cpuLimit: args.cpuLimit.length,
+    memoryLimit: args.memoryLimit.length
+  });
+  const cpuMap = mergeByPod(args.cpuUsage);
+  const memMap = mergeByPod(args.memoryUsage);
+  const cpuLimitMap = mergeByPod(args.cpuLimit);
+  const memLimitMap = mergeByPod(args.memoryLimit);
+  const podKeys = /* @__PURE__ */ new Set([
+    ...cpuMap.keys(),
+    ...memMap.keys(),
+    ...cpuLimitMap.keys(),
+    ...memLimitMap.keys()
+  ]);
+  const rows = [];
+  for (const key of podKeys) {
+    const [, pod] = key.split("::");
+    const cpuValues = cpuMap.get(key) ?? [];
+    const memValues = memMap.get(key) ?? [];
+    const cpuLimitValues = cpuLimitMap.get(key) ?? [];
+    const memLimitValues = memLimitMap.get(key) ?? [];
+    const avgCpuMillicores = mean2(cpuValues);
+    const p90CpuMillicores = percentile2(cpuValues, 90);
+    const cpuLimitMillicores = mean2(cpuLimitValues);
+    const avgMemoryBytes = mean2(memValues);
+    const p90MemoryBytes = percentile2(memValues, 90);
+    const memoryLimitBytes = mean2(memLimitValues);
+    const cpuLimitUtilizationP90Pct = cpuLimitMillicores > 0 ? p90CpuMillicores / cpuLimitMillicores * 100 : 0;
+    const memoryLimitUtilizationP90Pct = memoryLimitBytes > 0 ? p90MemoryBytes / memoryLimitBytes * 100 : 0;
+    rows.push({
+      namespace: args.namespace,
+      pod,
+      avgCpuMillicores,
+      p90CpuMillicores,
+      cpuLimitMillicores,
+      cpuLimitUtilizationP90Pct,
+      avgMemoryBytes,
+      p90MemoryBytes,
+      memoryLimitBytes,
+      memoryLimitUtilizationP90Pct,
+      sampleCount: Math.max(cpuValues.length, memValues.length)
+    });
+  }
+  const out = rows.sort((a, b) => a.pod.localeCompare(b.pod));
+  debug("buildPodInventory end", { rows: out.length });
+  return out;
+};
+
 // src/report/html.ts
 import { writeFile } from "fs/promises";
 import { resolve as resolve2 } from "path";
@@ -593,7 +723,7 @@ var run = async (argv) => {
   }
   debug("run start", { argv });
   const program = new Command();
-  program.name("ops-pod-opt").description("Dynatrace-backed CPU, memory, and pod sizing optimizer").version(VERSION).option("-c, --config <path>", "config file path", "config.yaml").option("-w, --window <window>", "override time window, e.g. 7d or 24h").option("-o, --output <path>", "override output report path").option("-d, --debug", "enable debug logging").option("-t, --tag <tag>", "tag filter (repeatable). Examples: env=prod, team=payments", collectTags, []).option("--filter <mode>", "report default filter: all | low-utilization", "all").option("--discover-namespaces", "list namespaces visible in Dynatrace and exit");
+  program.name("ops-pod-opt").description("Dynatrace-backed CPU, memory, and pod sizing optimizer").version(VERSION).option("-c, --config <path>", "config file path", "config.yaml").option("-w, --window <window>", "override time window, e.g. 7d or 24h").option("-o, --output <path>", "override output report path").option("-d, --debug", "enable debug logging").option("-t, --tag <tag>", "tag filter (repeatable). Examples: env=prod, team=payments", collectTags, []).option("--pods-namespace <namespace>", "print pod inventory and 90d avg/p90 usage for one namespace").option("--filter <mode>", "report default filter: all | low-utilization", "all").option("--discover-namespaces", "list namespaces visible in Dynatrace and exit");
   program.parse(argv);
   const opts = program.opts();
   if (opts.debug) {
@@ -629,6 +759,61 @@ var run = async (argv) => {
       console.log(`- ${namespace}`);
     }
     debug("discover namespaces mode complete", { namespaces: namespaces.length });
+    return;
+  }
+  if (opts.podsNamespace) {
+    const namespace = opts.podsNamespace;
+    const podWindow = opts.window ?? "90d";
+    debug("pods inventory mode start", { namespace, podWindow });
+    const [cpuUsage2, memoryUsage2, cpuLimit, memoryLimit] = await Promise.all([
+      client.queryPodMetric("cpuUsage", podWindow, namespace),
+      client.queryPodMetric("memoryUsage", podWindow, namespace),
+      client.queryPodMetric("cpuLimit", podWindow, namespace),
+      client.queryPodMetric("memoryLimit", podWindow, namespace)
+    ]);
+    const rows = buildPodInventory({
+      namespace,
+      cpuUsage: cpuUsage2,
+      memoryUsage: memoryUsage2,
+      cpuLimit,
+      memoryLimit
+    });
+    if (rows.length === 0) {
+      console.log(`No pod data found for namespace: ${namespace}`);
+      return;
+    }
+    console.log(`Pod inventory for namespace=${namespace}, window=${podWindow}`);
+    console.log(
+      [
+        "pod",
+        "samples",
+        "avg_cpu_mcores",
+        "p90_cpu_mcores",
+        "cpu_limit_mcores",
+        "p90_cpu_vs_limit_pct",
+        "avg_mem_bytes",
+        "p90_mem_bytes",
+        "mem_limit_bytes",
+        "p90_mem_vs_limit_pct"
+      ].join("	")
+    );
+    for (const row of rows) {
+      console.log(
+        [
+          row.pod,
+          String(row.sampleCount),
+          row.avgCpuMillicores.toFixed(2),
+          row.p90CpuMillicores.toFixed(2),
+          row.cpuLimitMillicores.toFixed(2),
+          row.cpuLimitUtilizationP90Pct.toFixed(2),
+          row.avgMemoryBytes.toFixed(2),
+          row.p90MemoryBytes.toFixed(2),
+          row.memoryLimitBytes.toFixed(2),
+          row.memoryLimitUtilizationP90Pct.toFixed(2)
+        ].join("	")
+      );
+    }
+    debug("pods inventory mode end", { namespace, rows: rows.length });
     return;
   }
   debug("starting metrics collection");

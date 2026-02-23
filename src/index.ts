@@ -6,6 +6,7 @@ import { loadConfig } from './config/loader.js';
 import { debug, setDebugEnabled } from './debug.js';
 import { DynatraceClient } from './dynatrace/client.js';
 import { generateRecommendations, mergeMetrics, summarizeByNamespace } from './domain/recommendations.js';
+import { buildPodInventory } from './domain/podInventory.js';
 import { writeReport } from './report/html.js';
 
 const VERSION = '0.2.0';
@@ -18,6 +19,7 @@ interface CliOptions {
   discoverNamespaces?: boolean;
   debug?: boolean;
   tag: string[];
+  podsNamespace?: string;
 }
 
 const collectTags = (value: string, previous: string[]): string[] => {
@@ -41,6 +43,7 @@ export const run = async (argv: string[]): Promise<void> => {
     .option('-o, --output <path>', 'override output report path')
     .option('-d, --debug', 'enable debug logging')
     .option('-t, --tag <tag>', 'tag filter (repeatable). Examples: env=prod, team=payments', collectTags, [])
+    .option('--pods-namespace <namespace>', 'print pod inventory and 90d avg/p90 usage for one namespace')
     .option('--filter <mode>', 'report default filter: all | low-utilization', 'all')
     .option('--discover-namespaces', 'list namespaces visible in Dynatrace and exit');
 
@@ -84,6 +87,68 @@ export const run = async (argv: string[]): Promise<void> => {
       console.log(`- ${namespace}`);
     }
     debug('discover namespaces mode complete', { namespaces: namespaces.length });
+    return;
+  }
+
+  if (opts.podsNamespace) {
+    const namespace = opts.podsNamespace;
+    const podWindow = opts.window ?? '90d';
+    debug('pods inventory mode start', { namespace, podWindow });
+
+    const [cpuUsage, memoryUsage, cpuLimit, memoryLimit] = await Promise.all([
+      client.queryPodMetric('cpuUsage', podWindow, namespace),
+      client.queryPodMetric('memoryUsage', podWindow, namespace),
+      client.queryPodMetric('cpuLimit', podWindow, namespace),
+      client.queryPodMetric('memoryLimit', podWindow, namespace),
+    ]);
+
+    const rows = buildPodInventory({
+      namespace,
+      cpuUsage,
+      memoryUsage,
+      cpuLimit,
+      memoryLimit,
+    });
+
+    if (rows.length === 0) {
+      console.log(`No pod data found for namespace: ${namespace}`);
+      return;
+    }
+
+    console.log(`Pod inventory for namespace=${namespace}, window=${podWindow}`);
+    console.log(
+      [
+        'pod',
+        'samples',
+        'avg_cpu_mcores',
+        'p90_cpu_mcores',
+        'cpu_limit_mcores',
+        'p90_cpu_vs_limit_pct',
+        'avg_mem_bytes',
+        'p90_mem_bytes',
+        'mem_limit_bytes',
+        'p90_mem_vs_limit_pct',
+      ].join('\t'),
+    );
+
+    for (const row of rows) {
+      console.log(
+        [
+          row.pod,
+          String(row.sampleCount),
+          row.avgCpuMillicores.toFixed(2),
+          row.p90CpuMillicores.toFixed(2),
+          row.cpuLimitMillicores.toFixed(2),
+          row.cpuLimitUtilizationP90Pct.toFixed(2),
+          row.avgMemoryBytes.toFixed(2),
+          row.p90MemoryBytes.toFixed(2),
+          row.memoryLimitBytes.toFixed(2),
+          row.memoryLimitUtilizationP90Pct.toFixed(2),
+        ].join('\t'),
+      );
+    }
+
+    debug('pods inventory mode end', { namespace, rows: rows.length });
     return;
   }
 
