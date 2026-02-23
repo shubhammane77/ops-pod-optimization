@@ -30,6 +30,7 @@ var AppConfigSchema = z.object({
   endpoint: z.string().url(),
   apiToken: z.string().optional().default(""),
   namespaces: z.array(z.string().min(1)).min(1),
+  tags: z.array(z.string().min(1)).default([]),
   timeWindow: z.string().regex(/^\d+[dh]$/).default("7d"),
   percentile: z.number().int().min(50).max(99).default(90),
   cpuHeadroomMultiplier: z.number().min(1).default(1.1),
@@ -118,29 +119,54 @@ var DynatraceClient = class {
   }
   async requestMetrics(params) {
     const url = `${this.endpoint}/api/v2/metrics/query?${params.toString()}`;
-    debug("dynatrace request start", { url });
+    const startedAt = Date.now();
+    debug("dynatrace api request start", {
+      method: "GET",
+      url,
+      metricSelector: params.get("metricSelector"),
+      from: params.get("from"),
+      resolution: params.get("resolution"),
+      nextPageKeyPresent: Boolean(params.get("nextPageKey"))
+    });
     const response = await fetch(url, {
       headers: {
         Authorization: `Api-Token ${this.token}`
       }
     });
+    const elapsedMs = Date.now() - startedAt;
     if (!response.ok) {
       const body = await response.text();
-      debug("dynatrace request failed", { status: response.status, body });
+      debug("dynatrace api request failed", {
+        status: response.status,
+        statusText: response.statusText,
+        elapsedMs,
+        bodyPreview: body.slice(0, 500)
+      });
       throw new Error(`Dynatrace API error ${response.status}: ${body}`);
     }
     const payload = await response.json();
-    debug("dynatrace request end", {
+    const seriesCount = (payload.result ?? []).reduce((acc, result) => acc + (result.data?.length ?? 0), 0);
+    const metricIds = (payload.result ?? []).map((result) => result.metricId).slice(0, 5);
+    debug("dynatrace api request end", {
+      status: response.status,
+      elapsedMs,
       resultCount: payload.result?.length ?? 0,
+      seriesCount,
+      metricIdsPreview: metricIds,
       nextPageKey: payload.nextPageKey ?? null
     });
     return payload;
   }
-  parseMetricSeries(payload, namespaces) {
-    debug("parseMetricSeries start", { resultCount: payload.result?.length ?? 0, namespaceCount: namespaces.length });
+  parseMetricSeries(payload, namespaces, requiredTags) {
+    debug("parseMetricSeries start", {
+      resultCount: payload.result?.length ?? 0,
+      namespaceCount: namespaces.length,
+      requiredTags
+    });
     const out = [];
     let skippedNoValues = 0;
     let skippedByNamespace = 0;
+    let skippedByTags = 0;
     for (const metric of payload.result ?? []) {
       for (const series of metric.data ?? []) {
         const values = (series.values ?? []).filter((v) => typeof v === "number");
@@ -156,13 +182,18 @@ var DynatraceClient = class {
         }
         const workload = map["k8s.workload.name"] ?? map["dt.entity.cloud_application.name"] ?? this.findDimensionByNeedle(map, "workload") ?? this.findDimensionByNeedle(map, "cloud_application") ?? series.dimensions.find((value) => value && value !== namespace) ?? "unknown";
         const workloadKind = map["k8s.workload.kind"] ?? this.findDimensionByNeedle(map, "kind") ?? this.inferKind(workload, map);
+        if (!this.matchesTags(map, requiredTags)) {
+          skippedByTags += 1;
+          continue;
+        }
         out.push({ namespace, workload, workloadKind, values });
       }
     }
     debug("parseMetricSeries end", {
       outputRows: out.length,
       skippedNoValues,
-      skippedByNamespace
+      skippedByNamespace,
+      skippedByTags
     });
     return out;
   }
@@ -179,8 +210,32 @@ var DynatraceClient = class {
     if (blob.includes("job")) return "job";
     return "other";
   }
-  async queryWithSelector(selector, fromWindow, namespaces) {
-    debug("queryWithSelector start", { selector, fromWindow });
+  matchesTags(map, requiredTags) {
+    if (requiredTags.length === 0) {
+      return true;
+    }
+    const entries = Object.entries(map).map(([key, value]) => [key.toLowerCase(), value.toLowerCase()]);
+    const blob = `${Object.keys(map).join(" ")} ${Object.values(map).join(" ")}`.toLowerCase();
+    return requiredTags.every((rawTag) => {
+      const tag = rawTag.trim().toLowerCase();
+      if (!tag) return true;
+      const eqIndex = tag.indexOf("=");
+      if (eqIndex > 0) {
+        const keyNeedle = tag.slice(0, eqIndex).trim();
+        const valNeedle = tag.slice(eqIndex + 1).trim();
+        if (!keyNeedle || !valNeedle) return false;
+        return entries.some(([key, value]) => key.includes(keyNeedle) && value.includes(valNeedle));
+      }
+      return blob.includes(tag);
+    });
+  }
+  buildNamespaceScopedSelector(selector, namespace) {
+    const escapedNamespace = namespace.replace(/"/g, '\\"');
+    return `${selector}:filter(eq("k8s.namespace.name","${escapedNamespace}"))`;
+  }
+  async queryWithSelector(selector, fromWindow, namespace, requiredTags) {
+    const scopedSelector = this.buildNamespaceScopedSelector(selector, namespace);
+    debug("queryWithSelector start", { selector, scopedSelector, fromWindow, namespace, requiredTags });
     const rows = [];
     let page = 0;
     let nextPageKey;
@@ -190,67 +245,57 @@ var DynatraceClient = class {
       if (nextPageKey) {
         params.set("nextPageKey", nextPageKey);
       } else {
-        params.set("metricSelector", selector);
+        params.set("metricSelector", scopedSelector);
         params.set("from", `now-${fromWindow}`);
         params.set("resolution", fromWindow.endsWith("h") ? "1m" : "5m");
       }
       const payload = await this.requestMetrics(params);
-      rows.push(...this.parseMetricSeries(payload, namespaces));
+      rows.push(...this.parseMetricSeries(payload, [namespace], requiredTags));
       nextPageKey = payload.nextPageKey;
-      debug("queryWithSelector page", { selector, page, nextPageKey: nextPageKey ?? null, rows: rows.length });
+      debug("queryWithSelector page", {
+        selector: scopedSelector,
+        page,
+        nextPageKey: nextPageKey ?? null,
+        cumulativeRows: rows.length
+      });
     } while (nextPageKey);
-    debug("queryWithSelector end", { selector, rows: rows.length });
+    debug("queryWithSelector end", { selector: scopedSelector, rows: rows.length, namespace });
     return rows;
   }
-  async queryMetric(metricType, fromWindow, namespaces) {
-    debug("queryMetric start", { metricType, fromWindow, namespaceCount: namespaces.length });
-    const selectorsByType = {
-      cpuUsage: [
-        'builtin:kubernetes.workload.cpu_usage:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg',
-        'builtin:containers.cpu.usagePercent:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg'
-      ],
-      memoryUsage: [
-        'builtin:kubernetes.workload.memory_working_set:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg',
-        'builtin:containers.memory.residentMemoryBytes:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg'
-      ],
-      cpuRequest: [
-        'builtin:kubernetes.workload.requests_cpu:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg'
-      ],
-      memoryRequest: [
-        'builtin:kubernetes.workload.requests_memory:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg'
-      ],
-      podCount: [
-        'builtin:kubernetes.pods:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg',
-        'builtin:kubernetes.workload.pods_desired:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg'
-      ]
+  async queryMetric(metricType, fromWindow, namespaces, requiredTags = []) {
+    debug("queryMetric start", { metricType, fromWindow, namespaceCount: namespaces.length, requiredTags });
+    const selectorByType = {
+      cpuUsage: 'builtin:kubernetes.workload.cpu_usage:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg',
+      memoryUsage: 'builtin:kubernetes.workload.memory_working_set:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg',
+      cpuRequest: 'builtin:kubernetes.workload.requests_cpu:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg',
+      memoryRequest: 'builtin:kubernetes.workload.requests_memory:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg',
+      podCount: 'builtin:kubernetes.pods:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg'
     };
-    const selectors = selectorsByType[metricType];
-    const failures = [];
-    for (const selector of selectors) {
-      debug("queryMetric selector attempt", { metricType, selector });
-      try {
-        const rows = await this.queryWithSelector(selector, fromWindow, namespaces);
-        if (rows.length > 0) {
-          debug("queryMetric selector success", { metricType, selector, rows: rows.length });
-          return rows;
-        }
-        debug("queryMetric selector empty", { metricType, selector });
-        failures.push(`${selector} (no matching data)`);
-      } catch (error) {
-        debug("queryMetric selector failed", {
-          metricType,
-          selector,
-          error: error instanceof Error ? error.message : String(error)
-        });
-        failures.push(`${selector} (${error instanceof Error ? error.message : String(error)})`);
+    const selector = selectorByType[metricType];
+    const allRows = [];
+    for (const namespace of namespaces) {
+      debug("queryMetric namespace start", { metricType, namespace, selector });
+      const rows = await this.queryWithSelector(selector, fromWindow, namespace, requiredTags);
+      if (rows.length === 0) {
+        debug("queryMetric namespace empty", { metricType, namespace, selector });
+        throw new Error(
+          `No usable Dynatrace selector for ${metricType} in namespace ${namespace}. Attempt: ${selector}${requiredTags.length ? `, tags: ${requiredTags.join(",")}` : ""}`
+        );
       }
+      allRows.push(...rows);
+      debug("queryMetric namespace success", { metricType, namespace, rows: rows.length });
     }
-    debug("queryMetric end failed", { metricType, attempts: failures.length });
-    throw new Error(`No usable Dynatrace selector for ${metricType}. Attempts: ${failures.join(" | ")}`);
+    if (allRows.length === 0) {
+      debug("queryMetric end failed empty", { metricType, selector });
+      throw new Error(`No usable Dynatrace selector for ${metricType}. Attempt: ${selector}`);
+    }
+    debug("queryMetric end success", { metricType, rows: allRows.length, selector });
+    return allRows;
   }
   async discoverNamespaces(fromWindow) {
     debug("discoverNamespaces start", { fromWindow });
     const selector = 'builtin:kubernetes.workload.pods:splitBy("k8s.namespace.name"):avg';
+    debug("discoverNamespaces selector", { selector });
     const params = new URLSearchParams({
       metricSelector: selector,
       from: `now-${fromWindow}`,
@@ -538,13 +583,17 @@ th{background:#eff4fd;position:sticky;top:0}.table-wrap{overflow:auto;border:1px
 
 // src/index.ts
 var VERSION = "0.2.0";
+var collectTags = (value, previous) => {
+  previous.push(value);
+  return previous;
+};
 var run = async (argv) => {
   if (argv.includes("--debug") || argv.includes("-d")) {
     setDebugEnabled(true);
   }
   debug("run start", { argv });
   const program = new Command();
-  program.name("ops-pod-opt").description("Dynatrace-backed CPU, memory, and pod sizing optimizer").version(VERSION).option("-c, --config <path>", "config file path", "config.yaml").option("-w, --window <window>", "override time window, e.g. 7d or 24h").option("-o, --output <path>", "override output report path").option("-d, --debug", "enable debug logging").option("--filter <mode>", "report default filter: all | low-utilization", "all").option("--discover-namespaces", "list namespaces visible in Dynatrace and exit");
+  program.name("ops-pod-opt").description("Dynatrace-backed CPU, memory, and pod sizing optimizer").version(VERSION).option("-c, --config <path>", "config file path", "config.yaml").option("-w, --window <window>", "override time window, e.g. 7d or 24h").option("-o, --output <path>", "override output report path").option("-d, --debug", "enable debug logging").option("-t, --tag <tag>", "tag filter (repeatable). Examples: env=prod, team=payments", collectTags, []).option("--filter <mode>", "report default filter: all | low-utilization", "all").option("--discover-namespaces", "list namespaces visible in Dynatrace and exit");
   program.parse(argv);
   const opts = program.opts();
   if (opts.debug) {
@@ -559,11 +608,13 @@ var run = async (argv) => {
     window: opts.window,
     outputPath: opts.output
   });
+  const requiredTags = [.../* @__PURE__ */ new Set([...config.tags ?? [], ...opts.tag ?? []])];
   debug("config loaded", {
     endpoint: config.endpoint,
     timeWindow: config.timeWindow,
     outputPath: config.outputPath,
-    namespaceCount: config.namespaces.length
+    namespaceCount: config.namespaces.length,
+    requiredTags
   });
   const client = new DynatraceClient(config.endpoint, config.apiToken);
   if (opts.discoverNamespaces) {
@@ -582,11 +633,11 @@ var run = async (argv) => {
   }
   debug("starting metrics collection");
   const [cpuUsage, memoryUsage, cpuRequest, memoryRequest, podCount] = await Promise.all([
-    client.queryMetric("cpuUsage", config.timeWindow, config.namespaces),
-    client.queryMetric("memoryUsage", config.timeWindow, config.namespaces),
-    client.queryMetric("cpuRequest", config.timeWindow, config.namespaces),
-    client.queryMetric("memoryRequest", config.timeWindow, config.namespaces),
-    client.queryMetric("podCount", config.timeWindow, config.namespaces)
+    client.queryMetric("cpuUsage", config.timeWindow, config.namespaces, requiredTags),
+    client.queryMetric("memoryUsage", config.timeWindow, config.namespaces, requiredTags),
+    client.queryMetric("cpuRequest", config.timeWindow, config.namespaces, requiredTags),
+    client.queryMetric("memoryRequest", config.timeWindow, config.namespaces, requiredTags),
+    client.queryMetric("podCount", config.timeWindow, config.namespaces, requiredTags)
   ]);
   debug("metrics collection complete", {
     cpuUsage: cpuUsage.length,

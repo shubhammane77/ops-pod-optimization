@@ -7,6 +7,7 @@ const cfg: AppConfig = {
   endpoint: 'https://example.live.dynatrace.com/e/env',
   apiToken: 'token',
   namespaces: ['prod'],
+  tags: [],
   timeWindow: '7d',
   percentile: 90,
   cpuHeadroomMultiplier: 1.1,

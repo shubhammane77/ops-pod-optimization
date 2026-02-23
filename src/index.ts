@@ -17,7 +17,13 @@ interface CliOptions {
   filter: 'all' | 'low-utilization';
   discoverNamespaces?: boolean;
   debug?: boolean;
+  tag: string[];
 }
+
+const collectTags = (value: string, previous: string[]): string[] => {
+  previous.push(value);
+  return previous;
+};
 
 export const run = async (argv: string[]): Promise<void> => {
   if (argv.includes('--debug') || argv.includes('-d')) {
@@ -34,6 +40,7 @@ export const run = async (argv: string[]): Promise<void> => {
     .option('-w, --window <window>', 'override time window, e.g. 7d or 24h')
     .option('-o, --output <path>', 'override output report path')
     .option('-d, --debug', 'enable debug logging')
+    .option('-t, --tag <tag>', 'tag filter (repeatable). Examples: env=prod, team=payments', collectTags, [])
     .option('--filter <mode>', 'report default filter: all | low-utilization', 'all')
     .option('--discover-namespaces', 'list namespaces visible in Dynatrace and exit');
 
@@ -53,11 +60,13 @@ export const run = async (argv: string[]): Promise<void> => {
     window: opts.window,
     outputPath: opts.output,
   });
+  const requiredTags = [...new Set([...(config.tags ?? []), ...(opts.tag ?? [])])];
   debug('config loaded', {
     endpoint: config.endpoint,
     timeWindow: config.timeWindow,
     outputPath: config.outputPath,
     namespaceCount: config.namespaces.length,
+    requiredTags,
   });
 
   const client = new DynatraceClient(config.endpoint, config.apiToken);
@@ -80,11 +89,11 @@ export const run = async (argv: string[]): Promise<void> => {
 
   debug('starting metrics collection');
   const [cpuUsage, memoryUsage, cpuRequest, memoryRequest, podCount] = await Promise.all([
-    client.queryMetric('cpuUsage', config.timeWindow, config.namespaces),
-    client.queryMetric('memoryUsage', config.timeWindow, config.namespaces),
-    client.queryMetric('cpuRequest', config.timeWindow, config.namespaces),
-    client.queryMetric('memoryRequest', config.timeWindow, config.namespaces),
-    client.queryMetric('podCount', config.timeWindow, config.namespaces),
+    client.queryMetric('cpuUsage', config.timeWindow, config.namespaces, requiredTags),
+    client.queryMetric('memoryUsage', config.timeWindow, config.namespaces, requiredTags),
+    client.queryMetric('cpuRequest', config.timeWindow, config.namespaces, requiredTags),
+    client.queryMetric('memoryRequest', config.timeWindow, config.namespaces, requiredTags),
+    client.queryMetric('podCount', config.timeWindow, config.namespaces, requiredTags),
   ]);
   debug('metrics collection complete', {
     cpuUsage: cpuUsage.length,

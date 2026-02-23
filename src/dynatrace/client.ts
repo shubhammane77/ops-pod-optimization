@@ -77,11 +77,16 @@ export class DynatraceClient {
     return payload;
   }
 
-  private parseMetricSeries(payload: MetricsResponse, namespaces: string[]): MetricPoint[] {
-    debug('parseMetricSeries start', { resultCount: payload.result?.length ?? 0, namespaceCount: namespaces.length });
+  private parseMetricSeries(payload: MetricsResponse, namespaces: string[], requiredTags: string[]): MetricPoint[] {
+    debug('parseMetricSeries start', {
+      resultCount: payload.result?.length ?? 0,
+      namespaceCount: namespaces.length,
+      requiredTags,
+    });
     const out: MetricPoint[] = [];
     let skippedNoValues = 0;
     let skippedByNamespace = 0;
+    let skippedByTags = 0;
 
     for (const metric of payload.result ?? []) {
       for (const series of metric.data ?? []) {
@@ -115,6 +120,11 @@ export class DynatraceClient {
         const workloadKind =
           map['k8s.workload.kind'] ?? this.findDimensionByNeedle(map, 'kind') ?? this.inferKind(workload, map);
 
+        if (!this.matchesTags(map, requiredTags)) {
+          skippedByTags += 1;
+          continue;
+        }
+
         out.push({ namespace, workload, workloadKind, values });
       }
     }
@@ -123,6 +133,7 @@ export class DynatraceClient {
       outputRows: out.length,
       skippedNoValues,
       skippedByNamespace,
+      skippedByTags,
     });
     return out;
   }
@@ -142,8 +153,43 @@ export class DynatraceClient {
     return 'other';
   }
 
-  private async queryWithSelector(selector: string, fromWindow: string, namespaces: string[]): Promise<MetricPoint[]> {
-    debug('queryWithSelector start', { selector, fromWindow });
+  private matchesTags(map: Record<string, string>, requiredTags: string[]): boolean {
+    if (requiredTags.length === 0) {
+      return true;
+    }
+
+    const entries = Object.entries(map).map(([key, value]) => [key.toLowerCase(), value.toLowerCase()] as const);
+    const blob = `${Object.keys(map).join(' ')} ${Object.values(map).join(' ')}`.toLowerCase();
+
+    return requiredTags.every((rawTag) => {
+      const tag = rawTag.trim().toLowerCase();
+      if (!tag) return true;
+
+      const eqIndex = tag.indexOf('=');
+      if (eqIndex > 0) {
+        const keyNeedle = tag.slice(0, eqIndex).trim();
+        const valNeedle = tag.slice(eqIndex + 1).trim();
+        if (!keyNeedle || !valNeedle) return false;
+        return entries.some(([key, value]) => key.includes(keyNeedle) && value.includes(valNeedle));
+      }
+
+      return blob.includes(tag);
+    });
+  }
+
+  private buildNamespaceScopedSelector(selector: string, namespace: string): string {
+    const escapedNamespace = namespace.replace(/"/g, '\\"');
+    return `${selector}:filter(eq("k8s.namespace.name","${escapedNamespace}"))`;
+  }
+
+  private async queryWithSelector(
+    selector: string,
+    fromWindow: string,
+    namespace: string,
+    requiredTags: string[],
+  ): Promise<MetricPoint[]> {
+    const scopedSelector = this.buildNamespaceScopedSelector(selector, namespace);
+    debug('queryWithSelector start', { selector, scopedSelector, fromWindow, namespace, requiredTags });
     const rows: MetricPoint[] = [];
     let page = 0;
     let nextPageKey: string | undefined;
@@ -154,74 +200,64 @@ export class DynatraceClient {
       if (nextPageKey) {
         params.set('nextPageKey', nextPageKey);
       } else {
-        params.set('metricSelector', selector);
+        params.set('metricSelector', scopedSelector);
         params.set('from', `now-${fromWindow}`);
         params.set('resolution', fromWindow.endsWith('h') ? '1m' : '5m');
       }
 
       const payload = await this.requestMetrics(params);
-      rows.push(...this.parseMetricSeries(payload, namespaces));
+      rows.push(...this.parseMetricSeries(payload, [namespace], requiredTags));
       nextPageKey = payload.nextPageKey;
       debug('queryWithSelector page', {
-        selector,
+        selector: scopedSelector,
         page,
         nextPageKey: nextPageKey ?? null,
         cumulativeRows: rows.length,
       });
     } while (nextPageKey);
 
-    debug('queryWithSelector end', { selector, rows: rows.length });
+    debug('queryWithSelector end', { selector: scopedSelector, rows: rows.length, namespace });
     return rows;
   }
 
-  async queryMetric(metricType: 'cpuUsage' | 'memoryUsage' | 'cpuRequest' | 'memoryRequest' | 'podCount', fromWindow: string, namespaces: string[]): Promise<MetricPoint[]> {
-    debug('queryMetric start', { metricType, fromWindow, namespaceCount: namespaces.length });
-    const selectorsByType: Record<typeof metricType, string[]> = {
-      cpuUsage: [
-        'builtin:kubernetes.workload.cpu_usage:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg',
-        'builtin:containers.cpu.usagePercent:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg',
-      ],
-      memoryUsage: [
-        'builtin:kubernetes.workload.memory_working_set:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg',
-        'builtin:containers.memory.residentMemoryBytes:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg',
-      ],
-      cpuRequest: [
-        'builtin:kubernetes.workload.requests_cpu:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg',
-      ],
-      memoryRequest: [
-        'builtin:kubernetes.workload.requests_memory:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg',
-      ],
-      podCount: [
-        'builtin:kubernetes.pods:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg',
-        'builtin:kubernetes.workload.pods_desired:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg',
-      ],
+  async queryMetric(
+    metricType: 'cpuUsage' | 'memoryUsage' | 'cpuRequest' | 'memoryRequest' | 'podCount',
+    fromWindow: string,
+    namespaces: string[],
+    requiredTags: string[] = [],
+  ): Promise<MetricPoint[]> {
+    debug('queryMetric start', { metricType, fromWindow, namespaceCount: namespaces.length, requiredTags });
+    const selectorByType: Record<typeof metricType, string> = {
+      cpuUsage: 'builtin:kubernetes.workload.cpu_usage:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg',
+      memoryUsage: 'builtin:kubernetes.workload.memory_working_set:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg',
+      cpuRequest: 'builtin:kubernetes.workload.requests_cpu:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg',
+      memoryRequest: 'builtin:kubernetes.workload.requests_memory:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg',
+      podCount: 'builtin:kubernetes.pods:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg',
     };
 
-    const selectors = selectorsByType[metricType];
-    const failures: string[] = [];
+    const selector = selectorByType[metricType];
+    const allRows: MetricPoint[] = [];
 
-    for (const selector of selectors) {
-      debug('queryMetric selector attempt', { metricType, selector });
-      try {
-        const rows = await this.queryWithSelector(selector, fromWindow, namespaces);
-        if (rows.length > 0) {
-          debug('queryMetric selector success', { metricType, selector, rows: rows.length });
-          return rows;
-        }
-        debug('queryMetric selector empty', { metricType, selector });
-        failures.push(`${selector} (no matching data)`);
-      } catch (error) {
-        debug('queryMetric selector failed', {
-          metricType,
-          selector,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        failures.push(`${selector} (${error instanceof Error ? error.message : String(error)})`);
+    for (const namespace of namespaces) {
+      debug('queryMetric namespace start', { metricType, namespace, selector });
+      const rows = await this.queryWithSelector(selector, fromWindow, namespace, requiredTags);
+      if (rows.length === 0) {
+        debug('queryMetric namespace empty', { metricType, namespace, selector });
+        throw new Error(
+          `No usable Dynatrace selector for ${metricType} in namespace ${namespace}. Attempt: ${selector}${requiredTags.length ? `, tags: ${requiredTags.join(',')}` : ''}`,
+        );
       }
+
+      allRows.push(...rows);
+      debug('queryMetric namespace success', { metricType, namespace, rows: rows.length });
     }
 
-    debug('queryMetric end failed', { metricType, attempts: failures.length });
-    throw new Error(`No usable Dynatrace selector for ${metricType}. Attempts: ${failures.join(' | ')}`);
+    if (allRows.length === 0) {
+      debug('queryMetric end failed empty', { metricType, selector });
+      throw new Error(`No usable Dynatrace selector for ${metricType}. Attempt: ${selector}`);
+    }
+    debug('queryMetric end success', { metricType, rows: allRows.length, selector });
+    return allRows;
   }
 
   async discoverNamespaces(fromWindow: string): Promise<string[]> {

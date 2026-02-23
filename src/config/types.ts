@@ -4,6 +4,7 @@ export const AppConfigSchema = z.object({
   endpoint: z.string().url(),
   apiToken: z.string().optional().default(''),
   namespaces: z.array(z.string().min(1)).min(1),
+  tags: z.array(z.string().min(1)).default([]),
   timeWindow: z.string().regex(/^\d+[dh]$/).default('7d'),
   percentile: z.number().int().min(50).max(99).default(90),
   cpuHeadroomMultiplier: z.number().min(1).default(1.1),
