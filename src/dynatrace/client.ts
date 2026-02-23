@@ -35,23 +35,43 @@ export class DynatraceClient {
 
   private async requestMetrics(params: URLSearchParams): Promise<MetricsResponse> {
     const url = `${this.endpoint}/api/v2/metrics/query?${params.toString()}`;
-    debug('dynatrace request start', { url });
+    const startedAt = Date.now();
+    debug('dynatrace api request start', {
+      method: 'GET',
+      url,
+      metricSelector: params.get('metricSelector'),
+      from: params.get('from'),
+      resolution: params.get('resolution'),
+      nextPageKeyPresent: Boolean(params.get('nextPageKey')),
+    });
 
     const response = await fetch(url, {
       headers: {
         Authorization: `Api-Token ${this.token}`,
       },
     });
+    const elapsedMs = Date.now() - startedAt;
 
     if (!response.ok) {
       const body = await response.text();
-      debug('dynatrace request failed', { status: response.status, body });
+      debug('dynatrace api request failed', {
+        status: response.status,
+        statusText: response.statusText,
+        elapsedMs,
+        bodyPreview: body.slice(0, 500),
+      });
       throw new Error(`Dynatrace API error ${response.status}: ${body}`);
     }
 
     const payload = (await response.json()) as MetricsResponse;
-    debug('dynatrace request end', {
+    const seriesCount = (payload.result ?? []).reduce((acc, result) => acc + (result.data?.length ?? 0), 0);
+    const metricIds = (payload.result ?? []).map((result) => result.metricId).slice(0, 5);
+    debug('dynatrace api request end', {
+      status: response.status,
+      elapsedMs,
       resultCount: payload.result?.length ?? 0,
+      seriesCount,
+      metricIdsPreview: metricIds,
       nextPageKey: payload.nextPageKey ?? null,
     });
     return payload;
@@ -142,7 +162,12 @@ export class DynatraceClient {
       const payload = await this.requestMetrics(params);
       rows.push(...this.parseMetricSeries(payload, namespaces));
       nextPageKey = payload.nextPageKey;
-      debug('queryWithSelector page', { selector, page, nextPageKey: nextPageKey ?? null, rows: rows.length });
+      debug('queryWithSelector page', {
+        selector,
+        page,
+        nextPageKey: nextPageKey ?? null,
+        cumulativeRows: rows.length,
+      });
     } while (nextPageKey);
 
     debug('queryWithSelector end', { selector, rows: rows.length });
@@ -167,7 +192,8 @@ export class DynatraceClient {
         'builtin:kubernetes.workload.requests_memory:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg',
       ],
       podCount: [
-        'builtin:kubernetes.workload.pods:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg',
+        'builtin:kubernetes.pods:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg',
+        'builtin:kubernetes.workload.pods_desired:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg',
       ],
     };
 
@@ -201,6 +227,7 @@ export class DynatraceClient {
   async discoverNamespaces(fromWindow: string): Promise<string[]> {
     debug('discoverNamespaces start', { fromWindow });
     const selector = 'builtin:kubernetes.workload.pods:splitBy("k8s.namespace.name"):avg';
+    debug('discoverNamespaces selector', { selector });
     const params = new URLSearchParams({
       metricSelector: selector,
       from: `now-${fromWindow}`,

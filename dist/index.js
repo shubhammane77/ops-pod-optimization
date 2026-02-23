@@ -220,7 +220,8 @@ var DynatraceClient = class {
         'builtin:kubernetes.workload.requests_memory:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg'
       ],
       podCount: [
-        'builtin:kubernetes.workload.pods:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg'
+        'builtin:kubernetes.pods:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg',
+        'builtin:kubernetes.workload.pods_desired:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg'
       ]
     };
     const selectors = selectorsByType[metricType];
