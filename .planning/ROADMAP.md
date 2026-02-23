@@ -47,6 +47,11 @@ Plans:
 
 **Requirements:** CFG-01, CFG-02, CFG-03, CFG-04
 
+**Plans:** 1 plan
+
+Plans:
+- [ ] 02-01-PLAN.md — Zod schema, loadConfig() with YAML parsing and env var override, vitest tests
+
 **Success Criteria:**
 
 1. Running the CLI with a valid `config.yaml` loads the config without errors and prints the resolved values in debug mode.
