@@ -1,7 +1,7 @@
 # Project State: Ops Pod Optimization Tool
 
 **Last updated:** 2026-02-23
-**Updated by:** execute-phase (01-02 complete)
+**Updated by:** execute-phase (01-01 complete)
 
 ---
 
@@ -54,6 +54,9 @@ Phase:    1 of 9 (Phase 1 plans done — phase complete pending verification)
 
 | Decision | Rationale | Phase |
 |----------|-----------|-------|
+| NodeNext module resolution chosen (not commonjs) for TypeScript ESM | Required for type: module package; using commonjs would create dual-mode conflicts | 01-01 |
+| All 9-phase runtime dependencies installed in Phase 1 | Prevents version surprises when later phases add packages; all versions pinned at RESEARCH.md-verified current values | 01-01 |
+| isMain guard in src/index.ts prevents auto-execution on import | Smoke test dynamically imports index.ts; without guard console output fires during test, causing test suite noise | 01-01 |
 | Full config schema written in Phase 1 (all 13 fields) | Avoids CFG-05 rework in Phase 2+; config.example.yaml documents all fields from CFG-01 through CFG-04 including memoryHeadroomMultiplier minimum 1.30 invariant | 01-02 |
 | Phase 3 is a risk-burn phase with no requirement IDs | API validation must precede all feature logic; entity selector syntax, metric key names, and resolution behavior are unverified on this Managed instance | Project init |
 | Phases 3 and 6 are infrastructure phases | Data Correlator (Phase 6) and API validation (Phase 3) are prerequisites for downstream features but have no user-visible output of their own | Project init |
@@ -114,8 +117,8 @@ None currently.
 
 **How to resume:** Read this file, then read `.planning/ROADMAP.md` for phase structure. Phase 1 plans 01 and 02 are complete. Phase 1 is now done (both plans finished). Run `/gsd:plan-phase 2` to begin Phase 2: Config Loader and Auth.
 
-**Last session:** 2026-02-23T19:46:47Z
-**Stopped at:** Completed 01-02-PLAN.md (config.example.yaml)
+**Last session:** 2026-02-23T19:55:13Z
+**Stopped at:** Completed 01-01-PLAN.md (ESM TypeScript toolchain setup)
 
 **Context a new session needs:**
 - This is a Dynatrace-backed Kubernetes right-sizing CLI tool
