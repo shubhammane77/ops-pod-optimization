@@ -49,6 +49,10 @@
 - [ ] **CFG-04**: User can configure the baseline percentile (default: 90) and CPU/memory headroom multipliers independently in the config file
 - [ ] **CFG-05**: Repository includes a sample annotated config file (`config.example.yaml`) documenting all fields with defaults and valid values
 
+### Developer Experience
+
+- [ ] **DEV-01**: Repository includes sample fixture data representing a realistic Dynatrace API response for local development and testing without a live Dynatrace connection
+
 ## v2 Requirements
 
 ### Reliability Signals
@@ -103,10 +107,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 | CFG-03 | Phase 9 | Pending |
 | CFG-04 | Phase 2 | Pending |
 | CFG-05 | Phase 1 | Pending |
+| DEV-01 | Phase 1 | Pending |
 
 **Coverage:**
-- v1 requirements: 26 total
-- Mapped to phases: 26
+- v1 requirements: 27 total
+- Mapped to phases: 27
 - Unmapped: 0
 
 ---
