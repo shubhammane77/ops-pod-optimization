@@ -163,6 +163,7 @@ export const generateRecommendations = (workloads: WorkloadMetrics[], config: Ap
 };
 
 export const summarizeByNamespace = (rows: WorkloadRecommendation[]): NamespaceSummary[] => {
+  debug('summarizeByNamespace start', { rows: rows.length });
   const map = new Map<string, NamespaceSummary>();
 
   for (const row of rows) {
@@ -189,9 +190,12 @@ export const summarizeByNamespace = (rows: WorkloadRecommendation[]): NamespaceS
     map.set(row.namespace, entry);
   }
 
-  return [...map.values()].sort((a, b) => {
+  const out = [...map.values()].sort((a, b) => {
     const wasteA = a.totalCpuWaste + a.totalMemoryWaste;
     const wasteB = b.totalCpuWaste + b.totalMemoryWaste;
     return wasteB - wasteA;
   });
+
+  debug('summarizeByNamespace end', { namespaces: out.length });
+  return out;
 };

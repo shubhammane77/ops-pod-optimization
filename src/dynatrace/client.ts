@@ -16,10 +16,6 @@ interface MetricsResponse {
   result: MetricsResult[];
 }
 
-interface NamespaceSeries {
-  namespace: string;
-}
-
 export interface MetricPoint {
   namespace: string;
   workload: string;
@@ -34,6 +30,7 @@ export class DynatraceClient {
   constructor(endpoint: string, token: string) {
     this.endpoint = endpoint.replace(/\/$/, '');
     this.token = token;
+    debug('DynatraceClient initialized', { endpoint: this.endpoint });
   }
 
   private async requestMetrics(params: URLSearchParams): Promise<MetricsResponse> {
@@ -61,12 +58,18 @@ export class DynatraceClient {
   }
 
   private parseMetricSeries(payload: MetricsResponse, namespaces: string[]): MetricPoint[] {
+    debug('parseMetricSeries start', { resultCount: payload.result?.length ?? 0, namespaceCount: namespaces.length });
     const out: MetricPoint[] = [];
+    let skippedNoValues = 0;
+    let skippedByNamespace = 0;
 
     for (const metric of payload.result ?? []) {
       for (const series of metric.data ?? []) {
         const values = (series.values ?? []).filter((v): v is number => typeof v === 'number');
-        if (values.length === 0) continue;
+        if (values.length === 0) {
+          skippedNoValues += 1;
+          continue;
+        }
 
         const map = series.dimensionMap ?? {};
 
@@ -76,7 +79,10 @@ export class DynatraceClient {
           this.findDimensionByNeedle(map, 'namespace') ??
           'unknown';
 
-        if (!namespaces.includes(namespace)) continue;
+        if (!namespaces.includes(namespace)) {
+          skippedByNamespace += 1;
+          continue;
+        }
 
         const workload =
           map['k8s.workload.name'] ??
@@ -93,6 +99,11 @@ export class DynatraceClient {
       }
     }
 
+    debug('parseMetricSeries end', {
+      outputRows: out.length,
+      skippedNoValues,
+      skippedByNamespace,
+    });
     return out;
   }
 
@@ -139,6 +150,7 @@ export class DynatraceClient {
   }
 
   async queryMetric(metricType: 'cpuUsage' | 'memoryUsage' | 'cpuRequest' | 'memoryRequest' | 'podCount', fromWindow: string, namespaces: string[]): Promise<MetricPoint[]> {
+    debug('queryMetric start', { metricType, fromWindow, namespaceCount: namespaces.length });
     const selectorsByType: Record<typeof metricType, string[]> = {
       cpuUsage: [
         'builtin:kubernetes.workload.cpu_usage:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg',
@@ -163,21 +175,31 @@ export class DynatraceClient {
     const failures: string[] = [];
 
     for (const selector of selectors) {
+      debug('queryMetric selector attempt', { metricType, selector });
       try {
         const rows = await this.queryWithSelector(selector, fromWindow, namespaces);
         if (rows.length > 0) {
+          debug('queryMetric selector success', { metricType, selector, rows: rows.length });
           return rows;
         }
+        debug('queryMetric selector empty', { metricType, selector });
         failures.push(`${selector} (no matching data)`);
       } catch (error) {
+        debug('queryMetric selector failed', {
+          metricType,
+          selector,
+          error: error instanceof Error ? error.message : String(error),
+        });
         failures.push(`${selector} (${error instanceof Error ? error.message : String(error)})`);
       }
     }
 
+    debug('queryMetric end failed', { metricType, attempts: failures.length });
     throw new Error(`No usable Dynatrace selector for ${metricType}. Attempts: ${failures.join(' | ')}`);
   }
 
   async discoverNamespaces(fromWindow: string): Promise<string[]> {
+    debug('discoverNamespaces start', { fromWindow });
     const selector = 'builtin:kubernetes.workload.pods:splitBy("k8s.namespace.name"):avg';
     const params = new URLSearchParams({
       metricSelector: selector,
@@ -199,6 +221,8 @@ export class DynatraceClient {
       }
     }
 
-    return [...namespaces].sort();
+    const output = [...namespaces].sort();
+    debug('discoverNamespaces end', { namespaces: output.length });
+    return output;
   }
 }

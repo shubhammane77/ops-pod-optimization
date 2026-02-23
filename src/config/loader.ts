@@ -6,10 +6,15 @@ import { debug } from '../debug.js';
 import { AppConfigSchema, type AppConfig, type ConfigOverrides } from './types.js';
 
 const parseByExtension = (raw: string, path: string): unknown => {
+  debug('parseByExtension start', { path });
   if (path.endsWith('.json')) {
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    debug('parseByExtension end', { format: 'json' });
+    return parsed;
   }
-  return yaml.load(raw);
+  const parsed = yaml.load(raw);
+  debug('parseByExtension end', { format: 'yaml' });
+  return parsed;
 };
 
 export const loadConfig = async (configPath: string, overrides?: ConfigOverrides): Promise<AppConfig> => {
@@ -33,16 +38,19 @@ export const loadConfig = async (configPath: string, overrides?: ConfigOverrides
   }
 
   if (!parsed || typeof parsed !== 'object') {
+    debug('loadConfig invalid parsed type', { parsedType: typeof parsed });
     throw new Error(`Invalid config format in ${absPath}`);
   }
 
   const configInput = { ...(parsed as Record<string, unknown>) };
 
   if (overrides?.window) {
+    debug('loadConfig applying window override', { window: overrides.window });
     configInput.timeWindow = overrides.window;
   }
 
   if (overrides?.outputPath) {
+    debug('loadConfig applying outputPath override', { outputPath: overrides.outputPath });
     configInput.outputPath = overrides.outputPath;
   }
 
@@ -60,6 +68,7 @@ export const loadConfig = async (configPath: string, overrides?: ConfigOverrides
   }
 
   if (!config.apiToken) {
+    debug('loadConfig missing api token after merge');
     throw new Error('apiToken is required in config file unless DYNATRACE_API_TOKEN is set');
   }
 
