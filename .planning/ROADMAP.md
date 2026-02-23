@@ -24,6 +24,13 @@ A Node.js CLI tool that queries a Dynatrace Managed v2 API to analyze Kubernetes
 
 **Requirements:** CFG-05, DEV-01
 
+**Plans:** 3 plans
+
+Plans:
+- [ ] 01-01-PLAN.md — ESM TypeScript toolchain setup (package.json, tsconfig, tsup, vitest, src/index.ts, smoke test)
+- [ ] 01-02-PLAN.md — config.example.yaml with full annotated schema (CFG-05)
+- [ ] 01-03-PLAN.md — fixtures/ directory with realistic Dynatrace API JSON responses (DEV-01)
+
 **Success Criteria:**
 
 1. Developer can run `npm run build` from a fresh clone and produce a runnable CLI binary with zero manual steps.
