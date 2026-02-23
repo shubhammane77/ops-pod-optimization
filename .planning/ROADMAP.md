@@ -4,7 +4,7 @@
 **Depth:** Comprehensive
 **Created:** 2026-02-23
 **Phases:** 9
-**Coverage:** 27/27 v1 requirements
+**Coverage:** 26/26 v1 requirements
 
 ## Overview
 
@@ -22,22 +22,20 @@ A Node.js CLI tool that queries a Dynatrace Managed v2 API to analyze Kubernetes
 
 **Dependencies:** None — this is the starting point.
 
-**Requirements:** CFG-05, DEV-01
+**Requirements:** CFG-05
 
-**Plans:** 3 plans
+**Plans:** 2 plans
 
 Plans:
-- [ ] 01-01-PLAN.md — ESM TypeScript toolchain setup (package.json, tsconfig, tsup, vitest, src/index.ts, smoke test)
-- [ ] 01-02-PLAN.md — config.example.yaml with full annotated schema (CFG-05)
-- [ ] 01-03-PLAN.md — fixtures/ directory with realistic Dynatrace API JSON responses (DEV-01)
+- [x] 01-01-PLAN.md — ESM TypeScript toolchain setup (package.json, tsconfig, tsup, vitest, src/index.ts, smoke test)
+- [x] 01-02-PLAN.md — config.example.yaml with full annotated schema (CFG-05)
 
 **Success Criteria:**
 
 1. Developer can run `npm run build` from a fresh clone and produce a runnable CLI binary with zero manual steps.
 2. Developer can run `npm test` and all tests execute in a TypeScript-native ESM environment using vitest.
 3. A `config.example.yaml` file exists in the repository with inline comments documenting every config field and valid values.
-4. A `fixtures/` directory exists with sample Dynatrace API JSON responses (entities and metrics) that represent a realistic multi-namespace cluster response.
-5. Developer can import any module from the project in a test file without import resolution errors.
+4. Developer can import any module from the project in a test file without import resolution errors.
 
 ---
 
@@ -130,7 +128,7 @@ Plans:
 2. A workload with full metric data (CPU, memory, network) is assigned `dataQuality: FULL`.
 3. A workload with partial metric data (e.g., network unavailable) is assigned `dataQuality: PARTIAL` — it still appears in the output with available metric fields populated and unavailable fields null.
 4. A workload with no metric data at all is assigned `dataQuality: MISSING` — it appears in the output with a flag indicating no recommendations can be generated.
-5. The join operation produces the same result whether run against fixture data or live API data — verifiable by running both modes against the same workload set.
+5. The join operation produces consistent results across repeated runs against the live API — verifiable by running against the same workload set twice within a short window.
 
 ---
 
@@ -180,9 +178,9 @@ Plans:
 
 **Dependencies:** Phase 8 (full pipeline complete).
 
-**Requirements:** CFG-03 (runtime window override wired to CLI flag), RPT-05 (CLI filter flag wired to report), NET-01, NET-02 (network CLI behavior), DEV-01 (fixture mode)
+**Requirements:** CFG-03 (runtime window override wired to CLI flag), RPT-05 (CLI filter flag wired to report), NET-01, NET-02 (network CLI behavior)
 
-**Note:** CFG-03 is first exercisable in Phase 2 (config loading), but its full observable behavior — passing `--window` to an actual analysis run and seeing the correct time window used — is only verifiable once the pipeline is wired in Phase 9. RPT-05's `--filter low-utilization` CLI flag similarly requires a running pipeline to observe. DEV-01 fixture data was created in Phase 1 but the `--fixture` CLI flag that activates fixture mode is wired here.
+**Note:** CFG-03 is first exercisable in Phase 2 (config loading), but its full observable behavior — passing `--window` to an actual analysis run and seeing the correct time window used — is only verifiable once the pipeline is wired in Phase 9. RPT-05's `--filter low-utilization` CLI flag similarly requires a running pipeline to observe.
 
 **Success Criteria:**
 
@@ -198,7 +196,7 @@ Plans:
 
 | Phase | Goal | Requirements | Status |
 |-------|------|--------------|--------|
-| 1 - Project Foundation | Dev environment operational, toolchain compiles, fixtures exist | CFG-05, DEV-01 | Pending |
+| 1 - Project Foundation | Dev environment operational, toolchain compiles | CFG-05 | Complete |
 | 2 - Config Loader and Auth | Config loads and validates, token precedence correct, CLI overrides work | CFG-01, CFG-02, CFG-03, CFG-04 | Pending |
 | 3 - API Client and Empirical Validation | Dynatrace API behavior proven on actual Managed instance | (risk-burn — no req IDs) | Pending |
 | 4 - Entities Collector | All workloads retrieved, typed, paginated, workload type classified | ANAL-01 | Pending |
@@ -206,7 +204,7 @@ Plans:
 | 6 - Data Correlator | Entity-metric join complete, dataQuality assigned to every workload | (join layer — no req IDs) | Pending |
 | 7 - Recommendation Engine | Right-sizing and replica recommendations computed with correct gating | CPU-02, CPU-03, CPU-04, MEM-02, MEM-03, MEM-04, ANAL-02, ANAL-03, ANAL-04 | Pending |
 | 8 - Report Renderer | Self-contained offline HTML with all sections, ranking, filter, graceful degradation | RPT-01, RPT-02, RPT-03, RPT-04, RPT-05, RPT-06, NET-03, CPU-01, MEM-01 | Pending |
-| 9 - CLI Integration and Distribution | Full pipeline wired, per-namespace error handling, single-file bundle | CFG-03, RPT-05, DEV-01 | Pending |
+| 9 - CLI Integration and Distribution | Full pipeline wired, per-namespace error handling, single-file bundle | CFG-03, RPT-05 | Pending |
 
 ---
 
@@ -219,7 +217,6 @@ Plans:
 | CFG-03 | Phase 2 / Phase 9 | Config |
 | CFG-04 | Phase 2 | Config |
 | CFG-05 | Phase 1 | Config |
-| DEV-01 | Phase 1 / Phase 9 | Developer Experience |
 | CPU-01 | Phase 5 / Phase 8 | Metrics |
 | CPU-02 | Phase 7 | Metrics |
 | CPU-03 | Phase 7 | Metrics |
@@ -242,7 +239,7 @@ Plans:
 | RPT-05 | Phase 8 / Phase 9 | Report |
 | RPT-06 | Phase 8 | Report |
 
-**Coverage: 27/27 v1 requirements mapped.**
+**Coverage: 26/26 v1 requirements mapped.**
 
 Note on shared requirements: CPU-01 and MEM-01 are first collected in Phase 5 (user can observe raw metric values) and first compared against requests in Phase 8 (user sees the comparison in the report). The requirement is assigned to Phase 8 where its user-visible behavior is delivered. CFG-03 and RPT-05 have partial behavior in earlier phases but full observable behavior only in Phase 9 — they are assigned to both phases in the table for traceability but owned by Phase 9 for coverage counting.
 
