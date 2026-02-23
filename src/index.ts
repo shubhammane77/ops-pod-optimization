@@ -1,4 +1,7 @@
 import { Command } from 'commander';
+import { realpathSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config/loader.js';
 import { debug, setDebugEnabled } from './debug.js';
 import { DynatraceClient } from './dynatrace/client.js';
@@ -129,7 +132,18 @@ export const main = async (): Promise<void> => {
   }
 };
 
-const isMain = import.meta.url === `file://${process.argv[1]}`;
+const isMain = (() => {
+  const argvPath = process.argv[1];
+  if (!argvPath) return false;
+  try {
+    const currentFile = realpathSync(fileURLToPath(import.meta.url));
+    const invokedFile = realpathSync(resolve(argvPath));
+    return currentFile === invokedFile;
+  } catch {
+    return false;
+  }
+})();
+
 if (isMain) {
   void main();
 }

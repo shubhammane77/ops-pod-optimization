@@ -2,6 +2,9 @@
 
 // src/index.ts
 import { Command } from "commander";
+import { realpathSync } from "fs";
+import { resolve as resolve3 } from "path";
+import { fileURLToPath } from "url";
 
 // src/config/loader.ts
 import { readFile } from "fs/promises";
@@ -11,8 +14,12 @@ import yaml from "js-yaml";
 
 // src/debug.ts
 import { env } from "process";
+var debugEnabled = Boolean(env.DEBUG);
+var setDebugEnabled = (enabled) => {
+  debugEnabled = enabled;
+};
 var debug = (...args) => {
-  if (env.DEBUG) {
+  if (debugEnabled) {
     console.debug("[debug]", ...args);
   }
 };
@@ -37,10 +44,15 @@ var AppConfigSchema = z.object({
 
 // src/config/loader.ts
 var parseByExtension = (raw, path) => {
+  debug("parseByExtension start", { path });
   if (path.endsWith(".json")) {
-    return JSON.parse(raw);
+    const parsed2 = JSON.parse(raw);
+    debug("parseByExtension end", { format: "json" });
+    return parsed2;
   }
-  return yaml.load(raw);
+  const parsed = yaml.load(raw);
+  debug("parseByExtension end", { format: "yaml" });
+  return parsed;
 };
 var loadConfig = async (configPath, overrides) => {
   debug("loadConfig start", { configPath, overrides });
@@ -60,13 +72,16 @@ var loadConfig = async (configPath, overrides) => {
     throw new Error(`Invalid config format in ${absPath}`);
   }
   if (!parsed || typeof parsed !== "object") {
+    debug("loadConfig invalid parsed type", { parsedType: typeof parsed });
     throw new Error(`Invalid config format in ${absPath}`);
   }
   const configInput = { ...parsed };
   if (overrides?.window) {
+    debug("loadConfig applying window override", { window: overrides.window });
     configInput.timeWindow = overrides.window;
   }
   if (overrides?.outputPath) {
+    debug("loadConfig applying outputPath override", { outputPath: overrides.outputPath });
     configInput.outputPath = overrides.outputPath;
   }
   if (typeof env2.DYNATRACE_API_TOKEN === "string" && env2.DYNATRACE_API_TOKEN.trim().length > 0) {
@@ -81,6 +96,7 @@ var loadConfig = async (configPath, overrides) => {
     throw error;
   }
   if (!config.apiToken) {
+    debug("loadConfig missing api token after merge");
     throw new Error("apiToken is required in config file unless DYNATRACE_API_TOKEN is set");
   }
   debug("loadConfig end", {
@@ -98,6 +114,7 @@ var DynatraceClient = class {
   constructor(endpoint, token) {
     this.endpoint = endpoint.replace(/\/$/, "");
     this.token = token;
+    debug("DynatraceClient initialized", { endpoint: this.endpoint });
   }
   async requestMetrics(params) {
     const url = `${this.endpoint}/api/v2/metrics/query?${params.toString()}`;
@@ -120,19 +137,33 @@ var DynatraceClient = class {
     return payload;
   }
   parseMetricSeries(payload, namespaces) {
+    debug("parseMetricSeries start", { resultCount: payload.result?.length ?? 0, namespaceCount: namespaces.length });
     const out = [];
+    let skippedNoValues = 0;
+    let skippedByNamespace = 0;
     for (const metric of payload.result ?? []) {
       for (const series of metric.data ?? []) {
         const values = (series.values ?? []).filter((v) => typeof v === "number");
-        if (values.length === 0) continue;
+        if (values.length === 0) {
+          skippedNoValues += 1;
+          continue;
+        }
         const map = series.dimensionMap ?? {};
         const namespace = map["k8s.namespace.name"] ?? map["dt.entity.cloud_application_namespace.name"] ?? this.findDimensionByNeedle(map, "namespace") ?? "unknown";
-        if (!namespaces.includes(namespace)) continue;
+        if (!namespaces.includes(namespace)) {
+          skippedByNamespace += 1;
+          continue;
+        }
         const workload = map["k8s.workload.name"] ?? map["dt.entity.cloud_application.name"] ?? this.findDimensionByNeedle(map, "workload") ?? this.findDimensionByNeedle(map, "cloud_application") ?? series.dimensions.find((value) => value && value !== namespace) ?? "unknown";
         const workloadKind = map["k8s.workload.kind"] ?? this.findDimensionByNeedle(map, "kind") ?? this.inferKind(workload, map);
         out.push({ namespace, workload, workloadKind, values });
       }
     }
+    debug("parseMetricSeries end", {
+      outputRows: out.length,
+      skippedNoValues,
+      skippedByNamespace
+    });
     return out;
   }
   findDimensionByNeedle(map, needle) {
@@ -172,6 +203,7 @@ var DynatraceClient = class {
     return rows;
   }
   async queryMetric(metricType, fromWindow, namespaces) {
+    debug("queryMetric start", { metricType, fromWindow, namespaceCount: namespaces.length });
     const selectorsByType = {
       cpuUsage: [
         'builtin:kubernetes.workload.cpu_usage:splitBy("k8s.namespace.name","k8s.workload.name","k8s.workload.kind"):avg',
@@ -194,19 +226,29 @@ var DynatraceClient = class {
     const selectors = selectorsByType[metricType];
     const failures = [];
     for (const selector of selectors) {
+      debug("queryMetric selector attempt", { metricType, selector });
       try {
         const rows = await this.queryWithSelector(selector, fromWindow, namespaces);
         if (rows.length > 0) {
+          debug("queryMetric selector success", { metricType, selector, rows: rows.length });
           return rows;
         }
+        debug("queryMetric selector empty", { metricType, selector });
         failures.push(`${selector} (no matching data)`);
       } catch (error) {
+        debug("queryMetric selector failed", {
+          metricType,
+          selector,
+          error: error instanceof Error ? error.message : String(error)
+        });
         failures.push(`${selector} (${error instanceof Error ? error.message : String(error)})`);
       }
     }
+    debug("queryMetric end failed", { metricType, attempts: failures.length });
     throw new Error(`No usable Dynatrace selector for ${metricType}. Attempts: ${failures.join(" | ")}`);
   }
   async discoverNamespaces(fromWindow) {
+    debug("discoverNamespaces start", { fromWindow });
     const selector = 'builtin:kubernetes.workload.pods:splitBy("k8s.namespace.name"):avg';
     const params = new URLSearchParams({
       metricSelector: selector,
@@ -224,7 +266,9 @@ var DynatraceClient = class {
         }
       }
     }
-    return [...namespaces].sort();
+    const output = [...namespaces].sort();
+    debug("discoverNamespaces end", { namespaces: output.length });
+    return output;
   }
 };
 
@@ -356,6 +400,7 @@ var generateRecommendations = (workloads, config) => {
   return results;
 };
 var summarizeByNamespace = (rows) => {
+  debug("summarizeByNamespace start", { rows: rows.length });
   const map = /* @__PURE__ */ new Map();
   for (const row of rows) {
     const entry = map.get(row.namespace) ?? {
@@ -377,11 +422,13 @@ var summarizeByNamespace = (rows) => {
     entry.totalMemoryWaste += Math.max(0, row.currentMemoryRequest - row.pMemoryUsage);
     map.set(row.namespace, entry);
   }
-  return [...map.values()].sort((a, b) => {
+  const out = [...map.values()].sort((a, b) => {
     const wasteA = a.totalCpuWaste + a.totalMemoryWaste;
     const wasteB = b.totalCpuWaste + b.totalMemoryWaste;
     return wasteB - wasteA;
   });
+  debug("summarizeByNamespace end", { namespaces: out.length });
+  return out;
 };
 
 // src/report/html.ts
@@ -491,20 +538,35 @@ th{background:#eff4fd;position:sticky;top:0}.table-wrap{overflow:auto;border:1px
 // src/index.ts
 var VERSION = "0.2.0";
 var run = async (argv) => {
+  if (argv.includes("--debug") || argv.includes("-d")) {
+    setDebugEnabled(true);
+  }
   debug("run start", { argv });
   const program = new Command();
-  program.name("ops-pod-opt").description("Dynatrace-backed CPU, memory, and pod sizing optimizer").version(VERSION).option("-c, --config <path>", "config file path", "config.yaml").option("-w, --window <window>", "override time window, e.g. 7d or 24h").option("-o, --output <path>", "override output report path").option("--filter <mode>", "report default filter: all | low-utilization", "all").option("--discover-namespaces", "list namespaces visible in Dynatrace and exit");
+  program.name("ops-pod-opt").description("Dynatrace-backed CPU, memory, and pod sizing optimizer").version(VERSION).option("-c, --config <path>", "config file path", "config.yaml").option("-w, --window <window>", "override time window, e.g. 7d or 24h").option("-o, --output <path>", "override output report path").option("-d, --debug", "enable debug logging").option("--filter <mode>", "report default filter: all | low-utilization", "all").option("--discover-namespaces", "list namespaces visible in Dynatrace and exit");
   program.parse(argv);
   const opts = program.opts();
+  if (opts.debug) {
+    setDebugEnabled(true);
+  }
+  debug("cli options parsed", opts);
   if (opts.filter !== "all" && opts.filter !== "low-utilization") {
+    debug("invalid filter received", { filter: opts.filter });
     throw new Error(`Invalid --filter value: ${opts.filter}`);
   }
   const config = await loadConfig(opts.config, {
     window: opts.window,
     outputPath: opts.output
   });
+  debug("config loaded", {
+    endpoint: config.endpoint,
+    timeWindow: config.timeWindow,
+    outputPath: config.outputPath,
+    namespaceCount: config.namespaces.length
+  });
   const client = new DynatraceClient(config.endpoint, config.apiToken);
   if (opts.discoverNamespaces) {
+    debug("discover namespaces mode enabled");
     const namespaces = await client.discoverNamespaces(config.timeWindow);
     if (namespaces.length === 0) {
       console.log("No namespaces discovered.");
@@ -514,8 +576,10 @@ var run = async (argv) => {
     for (const namespace of namespaces) {
       console.log(`- ${namespace}`);
     }
+    debug("discover namespaces mode complete", { namespaces: namespaces.length });
     return;
   }
+  debug("starting metrics collection");
   const [cpuUsage, memoryUsage, cpuRequest, memoryRequest, podCount] = await Promise.all([
     client.queryMetric("cpuUsage", config.timeWindow, config.namespaces),
     client.queryMetric("memoryUsage", config.timeWindow, config.namespaces),
@@ -523,6 +587,13 @@ var run = async (argv) => {
     client.queryMetric("memoryRequest", config.timeWindow, config.namespaces),
     client.queryMetric("podCount", config.timeWindow, config.namespaces)
   ]);
+  debug("metrics collection complete", {
+    cpuUsage: cpuUsage.length,
+    memoryUsage: memoryUsage.length,
+    cpuRequest: cpuRequest.length,
+    memoryRequest: memoryRequest.length,
+    podCount: podCount.length
+  });
   const workloads = mergeMetrics({
     cpuUsage,
     memoryUsage,
@@ -532,6 +603,7 @@ var run = async (argv) => {
   });
   const recommendations = generateRecommendations(workloads, config);
   const summary = summarizeByNamespace(recommendations);
+  debug("analysis complete", { workloads: workloads.length, recommendations: recommendations.length, summary: summary.length });
   const reportPath = await writeReport({
     outputPath: config.outputPath,
     config,
@@ -544,15 +616,28 @@ var run = async (argv) => {
   debug("run end", { recommendations: recommendations.length, reportPath });
 };
 var main = async () => {
+  debug("main start");
   try {
     await run(process.argv);
+    debug("main end success");
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    debug("main end failure", { message });
     console.error(`Error: ${message}`);
     process.exitCode = 1;
   }
 };
-var isMain = import.meta.url === `file://${process.argv[1]}`;
+var isMain = (() => {
+  const argvPath = process.argv[1];
+  if (!argvPath) return false;
+  try {
+    const currentFile = realpathSync(fileURLToPath(import.meta.url));
+    const invokedFile = realpathSync(resolve3(argvPath));
+    return currentFile === invokedFile;
+  } catch {
+    return false;
+  }
+})();
 if (isMain) {
   void main();
 }
