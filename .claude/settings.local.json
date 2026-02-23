@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Skill(gsd:update)",
+      "Bash(node /Users/shubh/.claude/get-shit-done/bin/gsd-tools.cjs commit \"docs: initialize project\" --files .planning/PROJECT.md)",
+      "Bash(node /Users/shubh/.claude/get-shit-done/bin/gsd-tools.cjs commit \"chore: add project config\" --files .planning/config.json)",
+      "Bash(node /Users/shubh/Repos/Github_Shubham/ops-pod-optimization/.claude/get-shit-done/bin/gsd-tools.js commit)",
+      "Bash(node /Users/shubh/.claude/get-shit-done/bin/gsd-tools.js commit \"docs: complete project research\" --files .planning/research/ 2>&1 || true)"
+    ]
+  }
+}

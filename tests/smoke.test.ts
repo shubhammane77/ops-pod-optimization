@@ -7,11 +7,13 @@ describe('build smoke test', () => {
   it('can import src/index.ts without resolution errors', async () => {
     const mod = await import('../src/index.js');
     expect(typeof mod.main).toBe('function');
+    expect(typeof mod.run).toBe('function');
   });
 
-  it('main() function is callable', async () => {
-    const { main } = await import('../src/index.js');
-    // Should not throw
-    expect(() => main()).not.toThrow();
+  it('run() fails fast on missing config path', async () => {
+    const { run } = await import('../src/index.js');
+    await expect(run(['node', 'ops-pod-opt', '--config', './missing-config.yaml'])).rejects.toThrow(
+      /Config file not found/,
+    );
   });
 });

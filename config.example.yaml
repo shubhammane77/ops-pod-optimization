@@ -49,6 +49,15 @@ timeWindow: "7d"
 # Metric Configuration
 # ============================================================
 
+# Dynatrace metric selectors used by the optimization engine.
+# Override if your environment uses different metric keys.
+metrics:
+  cpuUsage: "builtin:kubernetes.workload.cpu_usage"
+  memoryUsage: "builtin:kubernetes.workload.memory_working_set"
+  cpuRequest: "builtin:kubernetes.workload.requests_cpu"
+  memoryRequest: "builtin:kubernetes.workload.requests_memory"
+  podCount: "builtin:kubernetes.workload.pods"
+
 # Percentile to use for baseline utilization calculation.
 # Type: integer
 # Default: 90
