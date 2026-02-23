@@ -81,39 +81,39 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CPU-01 | — | Pending |
-| CPU-02 | — | Pending |
-| CPU-03 | — | Pending |
-| CPU-04 | — | Pending |
-| MEM-01 | — | Pending |
-| MEM-02 | — | Pending |
-| MEM-03 | — | Pending |
-| MEM-04 | — | Pending |
-| NET-01 | — | Pending |
-| NET-02 | — | Pending |
-| NET-03 | — | Pending |
-| ANAL-01 | — | Pending |
-| ANAL-02 | — | Pending |
-| ANAL-03 | — | Pending |
-| ANAL-04 | — | Pending |
-| RPT-01 | — | Pending |
-| RPT-02 | — | Pending |
-| RPT-03 | — | Pending |
-| RPT-04 | — | Pending |
-| RPT-05 | — | Pending |
-| RPT-06 | — | Pending |
-| CFG-01 | — | Pending |
-| CFG-02 | — | Pending |
-| CFG-03 | — | Pending |
-| CFG-04 | — | Pending |
-| CFG-05 | — | Pending |
-| DEV-01 | — | Pending |
+| CPU-01 | Phase 8 | Pending |
+| CPU-02 | Phase 7 | Pending |
+| CPU-03 | Phase 7 | Pending |
+| CPU-04 | Phase 7 | Pending |
+| MEM-01 | Phase 8 | Pending |
+| MEM-02 | Phase 7 | Pending |
+| MEM-03 | Phase 7 | Pending |
+| MEM-04 | Phase 7 | Pending |
+| NET-01 | Phase 5 | Pending |
+| NET-02 | Phase 5 | Pending |
+| NET-03 | Phase 8 | Pending |
+| ANAL-01 | Phase 4 | Pending |
+| ANAL-02 | Phase 7 | Pending |
+| ANAL-03 | Phase 7 | Pending |
+| ANAL-04 | Phase 7 | Pending |
+| RPT-01 | Phase 8 | Pending |
+| RPT-02 | Phase 8 | Pending |
+| RPT-03 | Phase 8 | Pending |
+| RPT-04 | Phase 8 | Pending |
+| RPT-05 | Phase 9 | Pending |
+| RPT-06 | Phase 8 | Pending |
+| CFG-01 | Phase 2 | Pending |
+| CFG-02 | Phase 2 | Pending |
+| CFG-03 | Phase 9 | Pending |
+| CFG-04 | Phase 2 | Pending |
+| CFG-05 | Phase 1 | Pending |
+| DEV-01 | Phase 1 | Pending |
 
 **Coverage:**
 - v1 requirements: 27 total
-- Mapped to phases: 0
-- Unmapped: 27 ⚠️
+- Mapped to phases: 27
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-02-23*
-*Last updated: 2026-02-23 after initial definition*
+*Last updated: 2026-02-23 after roadmap creation — traceability complete*
