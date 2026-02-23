@@ -1,0 +1,123 @@
+# Ops Pod Optimization Tool — Example Configuration
+# Copy this file to config.yaml and fill in your values.
+# All fields are documented with their type, default value, and valid values.
+
+# ============================================================
+# Dynatrace Connection
+# ============================================================
+
+# Base URL of your Dynatrace Managed instance.
+# Type: string (URL)
+# Format: https://<your-managed-host>/e/<environment-id>
+# Required. No default.
+endpoint: "https://your-dynatrace-host.example.com/e/your-env-id"
+
+# API token for authentication against the Dynatrace v2 API.
+# Type: string
+# Required scopes: metrics.read, entities.read
+# Can be overridden by DYNATRACE_API_TOKEN environment variable (env var takes precedence).
+# Required unless DYNATRACE_API_TOKEN is set.
+apiToken: "dt0c01.YOUR_TOKEN_HERE"
+
+# ============================================================
+# Analysis Scope
+# ============================================================
+
+# Kubernetes namespaces to analyze.
+# Type: list of strings
+# Names must exactly match namespace names as indexed by Dynatrace OneAgent.
+# Use --discover-namespaces flag to list available namespaces from your instance.
+# Required. At least one namespace must be provided.
+namespaces:
+  - production
+  - staging
+  - platform
+
+# ============================================================
+# Time Window
+# ============================================================
+
+# Default analysis time window for metric queries.
+# Type: string
+# Format: <N>d (days) or <N>h (hours). Examples: "1d", "7d", "30d", "2h", "24h".
+# Can be overridden at runtime with --window flag (e.g. --window 30d).
+# Default: "7d"
+# Valid: any positive integer followed by "d" (days) or "h" (hours)
+timeWindow: "7d"
+
+# ============================================================
+# Metric Configuration
+# ============================================================
+
+# Percentile to use for baseline utilization calculation.
+# Type: integer
+# Default: 90
+# Valid: integer between 50 and 99 (inclusive)
+# Note: p90 tolerates occasional spikes without over-provisioning — standard SRE practice.
+percentile: 90
+
+# Headroom multiplier applied to CPU request recommendations.
+# Recommended CPU request = p{percentile} CPU usage * cpuHeadroomMultiplier
+# Type: float
+# Default: 1.10 (10% headroom above p90)
+# Valid: float >= 1.0
+cpuHeadroomMultiplier: 1.10
+
+# Headroom multiplier applied to memory request recommendations.
+# Recommended memory request = p{percentile} memory usage * memoryHeadroomMultiplier
+# Type: float
+# Default: 1.30 (30% headroom above p90)
+# Valid: float >= 1.30
+# MINIMUM: 1.30 — even if you set a lower value, 30% headroom is enforced.
+# Memory spikes are abrupt and OOMKills are silent — the 30% floor is a safety invariant.
+memoryHeadroomMultiplier: 1.30
+
+# ============================================================
+# Recommendation Thresholds
+# ============================================================
+
+# Pods using less than this fraction of their CPU request are flagged as over-provisioned.
+# Type: float
+# Default: 0.6
+# Valid: float between 0.1 and 0.9 (inclusive)
+# Example: 0.6 means a pod using < 60% of its CPU request is over-provisioned.
+cpuOverProvisionedThreshold: 0.6
+
+# Pods using more than this fraction of their CPU request are flagged as under-provisioned.
+# Type: float
+# Default: 0.9
+# Valid: float between 0.5 and 1.0 (inclusive)
+# Example: 0.9 means a pod using > 90% of its CPU request is under-provisioned.
+cpuUnderProvisionedThreshold: 0.9
+
+# Memory thresholds follow the same convention as CPU thresholds above.
+# Type: float
+# Default: 0.6
+# Valid: float between 0.1 and 0.9 (inclusive)
+memoryOverProvisionedThreshold: 0.6
+
+# Memory under-provisioned threshold.
+# Type: float
+# Default: 0.9
+# Valid: float between 0.5 and 1.0 (inclusive)
+memoryUnderProvisionedThreshold: 0.9
+
+# Minimum replica count floor for replica reduction recommendations.
+# Deployments will never be recommended to scale below this value.
+# Type: integer
+# Default: 2
+# Valid: integer >= 1
+# Note: Applies to Deployments only. StatefulSets, DaemonSets, and CronJobs
+#       are excluded from replica reduction recommendations entirely (ANAL-02).
+minReplicaFloor: 2
+
+# ============================================================
+# Output
+# ============================================================
+
+# File path for the generated self-contained HTML report.
+# Type: string (file path)
+# Default: "./report.html"
+# Valid: any writable file path; parent directory must exist.
+# The generated file embeds all CSS and JS inline — no CDN dependencies, works offline.
+outputPath: "./report.html"
